@@ -102,6 +102,9 @@ class GenerateReqInput:
     # Whether to return hidden states
     return_hidden_states: Union[List[bool], bool] = False
 
+    # If we want to disable disc cache for this particular request
+    disable_cache: bool = True
+
     # The modalities of the image data [image, multi-images, video]
     modalities: Optional[List[str]] = None
     # Session info for continual prompting
@@ -504,6 +507,9 @@ class TokenizedGenerateReqInput:
     token_ids_logprob: List[int]
     # Whether to stream output
     stream: bool
+
+    # If we want to disable disc cache for this particular request
+    disable_cache: bool = True
 
     # LoRA related
     lora_id: Optional[str] = None  # None means just use the base model

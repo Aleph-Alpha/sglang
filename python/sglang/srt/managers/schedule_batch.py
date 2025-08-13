@@ -439,7 +439,9 @@ class Req:
         bootstrap_room: Optional[int] = None,
         data_parallel_rank: Optional[int] = None,
         vocab_size: Optional[int] = None,
+        disable_cache: Bool = True,
     ):
+        self.disable_cache = disable_cache
         # Input and output info
         self.rid = rid
         self.origin_input_text = origin_input_text

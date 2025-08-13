@@ -127,6 +127,7 @@ class OpenAIServingChat(OpenAIServingBase):
             bootstrap_room=request.bootstrap_room,
             return_hidden_states=request.return_hidden_states,
             rid=request.rid,
+            disable_cache=request.disable_cache,
         )
 
         return adapted_request, request
