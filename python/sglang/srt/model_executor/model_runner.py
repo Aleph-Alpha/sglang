@@ -1759,6 +1759,7 @@ class ModelRunner:
         reinit_attn_backend: bool = False,
         split_forward_count: int = 1,
     ) -> Tuple[Union[LogitsProcessorOutput, PPProxyTensors], bool]:
+        torch.cuda.synchronize()
         can_run_cuda_graph = bool(
             forward_batch.forward_mode.is_cuda_graph()
             and self.graph_runner

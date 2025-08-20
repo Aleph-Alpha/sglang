@@ -226,6 +226,8 @@ class TpModelWorker:
     ]:
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
 
+        torch.cuda.synchronize()
+
         pp_proxy_tensors = None
         if not self.pp_group.is_first_rank:
             pp_proxy_tensors = PPProxyTensors(

@@ -754,11 +754,30 @@ class FlashInferIndicesUpdaterDecode:
     ):
         if spec_info is None:
             bs = len(req_pool_indices)
-            assert (
-                seq_lens_cpu is None
-            )  # For now we break to make sure not to run into ECC memory issues.
-            kv_indptr[1 : bs + 1] = torch.cumsum(paged_kernel_lens, dim=0)
-            kv_indptr = kv_indptr[: bs + 1]
+            # assert (
+            #     seq_lens_cpu is None
+            # )  # For now we break to make sure not to run into ECC memory issues.
+            # assert they are the same seq_lens_cpu and paged_kernel_lens (the latter is on the GPU while the former is on CPU)
+            # assert torch.all(seq_lens_cpu == paged_kernel_lens.cpu())
+
+            # if seq_lens_cpu is None:
+            #     kv_indptr[1 : bs + 1] = torch.cumsum(paged_kernel_lens, dim=0)
+            # else:
+            #     # Computes cumsum on CPU and copy to GPU to avoid GPU-side errors
+            #     kv_indptr_cpu = torch.empty((bs + 1,), dtype=torch.int32, device="cpu")
+            #     kv_indptr_cpu[0] = 0
+            #     torch.cumsum(seq_lens_cpu, dim=0, out=kv_indptr_cpu[1:])
+            #     kv_indptr[: bs + 1].copy_(kv_indptr_cpu, non_blocking=False)
+            try:
+                kv_indptr[1 : bs + 1] = torch.cumsum(paged_kernel_lens, dim=0)
+                kv_indptr = kv_indptr[: bs + 1]
+            except Exception as e:
+                print(f"Error in cumsum: {e}")
+                print(f"paged_kernel_lens: {paged_kernel_lens}")
+                print(f"kv_indptr: {kv_indptr}")
+                print(f"bs: {bs}")
+                print(f"seq_lens_cpu: {seq_lens_cpu}")
+                raise e
 
             if wrapper.is_cuda_graph_enabled:
                 # Directly write to the cuda graph input buffer

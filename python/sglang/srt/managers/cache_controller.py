@@ -403,6 +403,7 @@ class HiCacheController:
         """
         Back up KV caches from device memory to host memory.
         """
+        print(f"DEBUG: HiCache write for node_id {node_id}", flush=True) 
         host_indices = self.mem_pool_host.alloc(len(device_indices))
         if host_indices is None:
             return None
@@ -422,6 +423,7 @@ class HiCacheController:
         """
         Load KV caches from host memory to device memory.
         """
+        print(f"DEBUG: HiCache load for node_id {node_id}", flush=True) 
         device_indices = self.mem_pool_device_allocator.alloc(len(host_indices))
         if device_indices is None:
             return None
@@ -435,6 +437,7 @@ class HiCacheController:
 
     def move_indices(self, host_indices, device_indices):
         # move indices to GPU if using kernels, to host if using direct indexing
+        print(f"DEBUG: HiCache move_indices", flush=True) 
         if self.io_backend == "kernel":
             return host_indices.to(self.mem_pool_device.device), device_indices
         elif self.io_backend == "direct":
@@ -448,6 +451,7 @@ class HiCacheController:
         """
         Directly write through KV caches to host memory without buffering.
         """
+        print(f"DEBUG: HiCache write_thread_func_direct", flush=True)   
         torch.cuda.set_stream(self.write_stream)
         while not self.stop_event.is_set():
             try:
@@ -472,6 +476,7 @@ class HiCacheController:
         """
         Load KV caches from host memory to device memory layer by layer.
         """
+        print(f"DEBUG: HiCache load_thread_func_layer_by_layer", flush=True) 
         torch.cuda.set_stream(self.load_stream)
         while not self.stop_event.is_set():
             self.load_cache_event.wait(timeout=1)
@@ -514,6 +519,7 @@ class HiCacheController:
     def evict_device(
         self, device_indices: torch.Tensor, host_indices: torch.Tensor
     ) -> int:
+        print(f"DEBUG: HiCache evict_device for host_indices {host_indices}", flush=True) 
         if self.mem_pool_host.is_synced(host_indices):
             self.mem_pool_device_allocator.free(device_indices)
             self.mem_pool_host.update_backup(host_indices)
@@ -524,6 +530,7 @@ class HiCacheController:
             )
 
     def evict_host(self, host_indices: torch.Tensor, backup_only: bool = True) -> int:
+        print(f"DEBUG: HiCache evict_host for host_indices {host_indices}", flush=True) 
         if not backup_only:
             raise ValueError("Other eviction policies are not supported yet.")
 
@@ -545,6 +552,7 @@ class HiCacheController:
         """
         Prefetch KV caches from storage backend to host memory.
         """
+        print(f"DEBUG: HiCache prefetch for request_id {request_id}", flush=True) 
         operation = PrefetchOperation(
             request_id, host_indices, new_input_tokens, last_hash
         )
@@ -556,6 +564,7 @@ class HiCacheController:
         return operation.completed_tokens, operation.hash_value
 
     def generic_page_transfer(self, operation, batch_size=8):
+        print(f"DEBUG: HiCache generic_page_transfer for request_id {operation.request_id}", flush=True) 
         for i in range(0, len(operation.hash_value), batch_size):
             page_hashes = operation.hash_value[i : i + batch_size]
             # todo: zero copy
@@ -580,6 +589,7 @@ class HiCacheController:
                 break
 
     def mooncake_page_transfer(self, operation):
+        print(f"DEBUG: HiCache mooncake_page_transfer for request_id {operation.request_id}", flush=True) 
         key_strs, buffer_ptrs, buffer_sizes = self.mem_pool_host.get_buffer_meta(
             operation.hash_value, operation.host_indices
         )

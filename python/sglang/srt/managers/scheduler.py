@@ -1717,6 +1717,8 @@ class Scheduler(
         self, batch: ScheduleBatch
     ) -> Union[GenerationBatchResult, EmbeddingBatchResult]:
         """Run a batch."""
+
+        torch.cuda.synchronize()
         self.forward_ct += 1
 
         # Whether to run the profiler
