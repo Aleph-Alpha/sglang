@@ -29,6 +29,7 @@ pub struct ServiceDiscoveryConfig {
     pub pd_mode: bool,
     pub prefill_selector: HashMap<String, String>,
     pub decode_selector: HashMap<String, String>,
+    pub service_discovery_port_annotation: String,
     // Bootstrap port annotation specific to mooncake implementation
     pub bootstrap_port_annotation: String,
 }
@@ -44,6 +45,7 @@ impl Default for ServiceDiscoveryConfig {
             pd_mode: false,
             prefill_selector: HashMap::new(),
             decode_selector: HashMap::new(),
+            service_discovery_port_annotation: "sglang.ai/service-discovery-port".to_string(),
             bootstrap_port_annotation: "sglang.ai/bootstrap-port".to_string(),
         }
     }
@@ -65,6 +67,7 @@ pub struct PodInfo {
     pub status: String,
     pub is_ready: bool,
     pub pod_type: Option<PodType>,
+    pub port: u16,
     pub bootstrap_port: Option<u16>,
 }
 
@@ -137,17 +140,24 @@ impl PodInfo {
             None
         };
 
+        let extract_port_from_annotation = |annotation_key: &str| {
+            pod.metadata
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.get(annotation_key))
+                .and_then(|port_str| port_str.parse::<u16>().ok())
+        };
+
+        let port = if let Some(config) = config {
+            extract_port_from_annotation(&config.service_discovery_port_annotation)
+                .unwrap_or(config.port)
+        } else {
+            ServiceDiscoveryConfig::default().port
+        };
+
         // Extract bootstrap port from annotations for prefill pods
         let bootstrap_port = if matches!(pod_type, Some(PodType::Prefill)) {
-            if let Some(config) = config {
-                pod.metadata
-                    .annotations
-                    .as_ref()
-                    .and_then(|annotations| annotations.get(&config.bootstrap_port_annotation))
-                    .and_then(|port_str| port_str.parse::<u16>().ok())
-            } else {
-                None
-            }
+            config.and_then(|c| extract_port_from_annotation(&c.bootstrap_port_annotation))
         } else {
             None
         };
@@ -158,6 +168,7 @@ impl PodInfo {
             status: pod_status,
             is_ready,
             pod_type,
+            port,
             bootstrap_port,
         })
     }
@@ -168,8 +179,8 @@ impl PodInfo {
     }
 
     /// Generates a worker URL for this pod
-    pub fn worker_url(&self, port: u16) -> String {
-        format!("http://{}:{}", self.ip, port)
+    pub fn worker_url(&self) -> String {
+        format!("http://{}:{}", self.ip, self.port)
     }
 }
 
@@ -243,7 +254,6 @@ pub async fn start_service_discovery(
 
         // Create Arcs for configuration data
         let config_arc = Arc::new(config.clone());
-        let port = config.port;
 
         let mut retry_delay = Duration::from_secs(1);
         const MAX_RETRY_DELAY: Duration = Duration::from_secs(300); // 5 minutes max
@@ -295,7 +305,6 @@ pub async fn start_service_discovery(
                                     &pod_info,
                                     tracked_pods_inner,
                                     router_inner,
-                                    port,
                                     config_inner.pd_mode,
                                 )
                                 .await;
@@ -304,7 +313,6 @@ pub async fn start_service_discovery(
                                     &pod_info,
                                     tracked_pods_inner,
                                     router_inner,
-                                    port,
                                     config_inner.pd_mode,
                                 )
                                 .await;
@@ -348,10 +356,9 @@ async fn handle_pod_event(
     pod_info: &PodInfo,
     tracked_pods: Arc<Mutex<HashSet<PodInfo>>>,
     router: Arc<dyn RouterTrait>,
-    port: u16,
     pd_mode: bool,
 ) {
-    let worker_url = pod_info.worker_url(port);
+    let worker_url = pod_info.worker_url();
 
     // If pod is healthy, try to add it (with atomic check-and-insert)
     if pod_info.is_healthy() {
@@ -429,10 +436,9 @@ async fn handle_pod_deletion(
     pod_info: &PodInfo,
     tracked_pods: Arc<Mutex<HashSet<PodInfo>>>,
     router: Arc<dyn RouterTrait>,
-    port: u16,
     pd_mode: bool,
 ) {
-    let worker_url = pod_info.worker_url(port);
+    let worker_url = pod_info.worker_url();
 
     let was_tracked = {
         let mut tracked = match tracked_pods.lock() {
@@ -498,6 +504,8 @@ mod tests {
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
+    const TEST_PORT: u16 = 8080;
+
     // Helper function to create a Pod for testing PodInfo::from_pod
     fn create_k8s_pod(
         name: Option<&str>,
@@ -542,12 +550,15 @@ mod tests {
     }
 
     // Helper function to create a Pod with PD-specific labels and annotations
-    fn create_pd_k8s_pod(name: &str, ip: &str, pod_type: &str, bootstrap_port: Option<u16>) -> Pod {
+    fn create_pd_k8s_pod(name: &str, ip: &str, pod_type: &str, port: Option<u16>, bootstrap_port: Option<u16>,) -> Pod {
         let mut labels = std::collections::BTreeMap::new();
         labels.insert("app".to_string(), "sglang".to_string());
         labels.insert("component".to_string(), pod_type.to_string());
 
         let mut annotations = std::collections::BTreeMap::new();
+        if let Some(port) = port {
+            annotations.insert("sglang.ai/service-discovery-port".to_string(), port.to_string());
+        }
         if let Some(port) = bootstrap_port {
             annotations.insert("sglang.ai/bootstrap-port".to_string(), port.to_string());
         }
@@ -615,11 +626,12 @@ mod tests {
             enabled: true,
             selector: HashMap::new(),
             check_interval: Duration::from_secs(60),
-            port: 8080,
+            port: TEST_PORT,
             namespace: None,
             pd_mode: true,
             prefill_selector,
             decode_selector,
+            service_discovery_port_annotation: "sglang.ai/service-discovery-port".to_string(),
             bootstrap_port_annotation: "sglang.ai/bootstrap-port".to_string(),
         }
     }
@@ -629,15 +641,15 @@ mod tests {
         let config = create_pd_config();
 
         // Test prefill pod should be included
-        let prefill_pod = create_pd_k8s_pod("prefill-pod", "10.0.0.1", "prefill", Some(8081));
+        let prefill_pod = create_pd_k8s_pod("prefill-pod", "10.0.0.1", "prefill", None, Some(8081));
         assert!(PodInfo::should_include(&prefill_pod, &config));
 
         // Test decode pod should be included
-        let decode_pod = create_pd_k8s_pod("decode-pod", "10.0.0.2", "decode", None);
+        let decode_pod = create_pd_k8s_pod("decode-pod", "10.0.0.2", "decode", None, None);
         assert!(PodInfo::should_include(&decode_pod, &config));
 
         // Test unmatched pod should not be included
-        let unmatched_pod = create_pd_k8s_pod("other-pod", "10.0.0.3", "other", None);
+        let unmatched_pod = create_pd_k8s_pod("other-pod", "10.0.0.3", "other", None, None);
         assert!(!PodInfo::should_include(&unmatched_pod, &config));
 
         // Test regular mode
@@ -647,7 +659,7 @@ mod tests {
             .insert("app".to_string(), "sglang".to_string());
         regular_config.pd_mode = false;
 
-        let regular_pod = create_pd_k8s_pod("worker-pod", "10.0.0.4", "worker", None);
+        let regular_pod = create_pd_k8s_pod("worker-pod", "10.0.0.4", "worker", None, None);
         assert!(PodInfo::should_include(&regular_pod, &regular_config));
     }
 
@@ -662,6 +674,7 @@ mod tests {
         assert!(!config.pd_mode);
         assert!(config.prefill_selector.is_empty());
         assert!(config.decode_selector.is_empty());
+        assert_eq!(config.service_discovery_port_annotation, "sglang.ai/service-discovery-port");
         assert_eq!(config.bootstrap_port_annotation, "sglang.ai/bootstrap-port");
     }
 
@@ -692,12 +705,13 @@ mod tests {
         assert_eq!(pod_info.status, "Running");
         assert!(pod_info.is_ready);
         assert!(pod_info.pod_type.is_none());
+        assert_eq!(pod_info.port, 8000);
         assert!(pod_info.bootstrap_port.is_none());
     }
 
     #[test]
     fn test_pod_info_from_pod_with_pd_config_prefill() {
-        let k8s_pod = create_pd_k8s_pod("prefill-pod", "10.0.0.1", "prefill", Some(8081));
+        let k8s_pod = create_pd_k8s_pod("prefill-pod", "10.0.0.1", "prefill", Some(9999), Some(8081));
         let config = create_pd_config();
 
         let pod_info = PodInfo::from_pod(&k8s_pod, Some(&config)).unwrap();
@@ -706,12 +720,13 @@ mod tests {
         assert_eq!(pod_info.status, "Running");
         assert!(pod_info.is_ready);
         assert_eq!(pod_info.pod_type, Some(PodType::Prefill));
+        assert_eq!(pod_info.port, 9999);
         assert_eq!(pod_info.bootstrap_port, Some(8081));
     }
 
     #[test]
     fn test_pod_info_from_pod_with_pd_config_decode() {
-        let k8s_pod = create_pd_k8s_pod("decode-pod", "10.0.0.2", "decode", None);
+        let k8s_pod = create_pd_k8s_pod("decode-pod", "10.0.0.2", "decode", Some(9998), None);
         let config = create_pd_config();
 
         let pod_info = PodInfo::from_pod(&k8s_pod, Some(&config)).unwrap();
@@ -720,12 +735,13 @@ mod tests {
         assert_eq!(pod_info.status, "Running");
         assert!(pod_info.is_ready);
         assert_eq!(pod_info.pod_type, Some(PodType::Decode));
+        assert_eq!(pod_info.port, 9998);
         assert!(pod_info.bootstrap_port.is_none());
     }
 
     #[test]
     fn test_pod_info_from_pod_with_pd_config_regular_mode() {
-        let k8s_pod = create_pd_k8s_pod("regular-pod", "10.0.0.3", "worker", None);
+        let k8s_pod = create_pd_k8s_pod("regular-pod", "10.0.0.3", "worker", None, None);
         let mut config = create_pd_config();
         config.pd_mode = false; // Set to regular mode
 
@@ -735,12 +751,13 @@ mod tests {
         assert_eq!(pod_info.status, "Running");
         assert!(pod_info.is_ready);
         assert_eq!(pod_info.pod_type, Some(PodType::Regular));
+        assert_eq!(pod_info.port, TEST_PORT);
         assert!(pod_info.bootstrap_port.is_none());
     }
 
     #[test]
     fn test_pod_info_from_pod_with_pd_config_unmatched_labels() {
-        let k8s_pod = create_pd_k8s_pod("unknown-pod", "10.0.0.4", "unknown", None);
+        let k8s_pod = create_pd_k8s_pod("unknown-pod", "10.0.0.4", "unknown", None, None);
         let config = create_pd_config();
 
         let pod_info = PodInfo::from_pod(&k8s_pod, Some(&config)).unwrap();
@@ -749,12 +766,13 @@ mod tests {
         assert_eq!(pod_info.status, "Running");
         assert!(pod_info.is_ready);
         assert_eq!(pod_info.pod_type, Some(PodType::Regular));
+        assert_eq!(pod_info.port, TEST_PORT);
         assert!(pod_info.bootstrap_port.is_none());
     }
 
     #[test]
     fn test_pod_info_from_pod_with_pd_config_invalid_bootstrap_port() {
-        let mut pod = create_pd_k8s_pod("prefill-pod", "10.0.0.1", "prefill", None);
+        let mut pod = create_pd_k8s_pod("prefill-pod", "10.0.0.1", "prefill", None, None);
         // Add invalid bootstrap port annotation
         pod.metadata.annotations.as_mut().unwrap().insert(
             "sglang.ai/bootstrap-port".to_string(),
@@ -765,6 +783,22 @@ mod tests {
         let pod_info = PodInfo::from_pod(&pod, Some(&config)).unwrap();
         assert_eq!(pod_info.pod_type, Some(PodType::Prefill));
         assert!(pod_info.bootstrap_port.is_none()); // Should be None for invalid port
+    }
+
+    #[test]
+    fn test_pod_info_from_pod_with_invalid_port_annotation() {
+        let mut pod = create_pd_k8s_pod("prefill-pod", "10.0.0.1", "prefill", None, Some(8081));
+        // Add invalid port annotation
+        pod.metadata .annotations.as_mut().unwrap().insert(
+            "sglang.ai/service-discovery-port".to_string(),
+            "invalid".to_string(),
+        );
+        let config = create_pd_config();
+
+        let pod_info = PodInfo::from_pod(&pod, Some(&config)).unwrap();
+        assert_eq!(pod_info.port, config.port); // Should fall back to the config port
+        assert_eq!(pod_info.pod_type, Some(PodType::Prefill));
+        assert_eq!(pod_info.bootstrap_port, Some(8081));
     }
 
     #[test]
@@ -827,6 +861,7 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: None,
+            port: 8000,
             bootstrap_port: None,
         };
         assert!(healthy_pod.is_healthy());
@@ -837,6 +872,7 @@ mod tests {
             status: "Running".into(),
             is_ready: false,
             pod_type: None,
+            port: 8000,
             bootstrap_port: None,
         };
         assert!(!not_ready_pod.is_healthy());
@@ -847,6 +883,7 @@ mod tests {
             status: "Pending".into(),
             is_ready: true,
             pod_type: None,
+            port: 8000,
             bootstrap_port: None,
         };
         assert!(!not_running_pod.is_healthy());
@@ -860,9 +897,13 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: None,
+            port: TEST_PORT,
             bootstrap_port: None,
         };
-        assert_eq!(pod_info.worker_url(8080), "http://1.2.3.4:8080");
+        assert_eq!(
+            pod_info.worker_url(),
+            format!("http://1.2.3.4:{}", TEST_PORT)
+        );
     }
 
     #[test]
@@ -873,6 +914,7 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Prefill),
+            port: TEST_PORT,
             bootstrap_port: Some(8081),
         };
 
@@ -882,6 +924,7 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Prefill),
+            port: TEST_PORT,
             bootstrap_port: Some(8081),
         };
 
@@ -891,6 +934,7 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Decode),
+            port: TEST_PORT,
             bootstrap_port: None,
         };
 
@@ -908,15 +952,14 @@ mod tests {
             status: "Pending".into(),
             is_ready: false,
             pod_type: None,
+            port: TEST_PORT,
             bootstrap_port: None,
         };
-        let port = 8080u16;
 
         handle_pod_event(
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             false, // pd_mode = false
         )
         .await;
@@ -924,7 +967,7 @@ mod tests {
         assert!(!tracked_pods.lock().unwrap().contains(&pod_info));
         assert!(!router
             .get_worker_urls()
-            .contains(&pod_info.worker_url(port)));
+            .contains(&pod_info.worker_url()));
     }
 
     #[tokio::test]
@@ -937,15 +980,14 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: None,
+            port: TEST_PORT,
             bootstrap_port: None,
         };
-        let port = 8080u16;
 
         handle_pod_deletion(
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             false, // pd_mode = false
         )
         .await;
@@ -964,9 +1006,9 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Prefill),
+            port: TEST_PORT,
             bootstrap_port: Some(8081),
         };
-        let port = 8080u16;
 
         // This test validates the structure but won't actually add workers since
         // we're using a regular router instead of PD router
@@ -974,7 +1016,6 @@ mod tests {
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             false, // pd_mode = false, so it should fallback to regular handling
         )
         .await;
@@ -993,15 +1034,14 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Decode),
+            port: TEST_PORT,
             bootstrap_port: None,
         };
-        let port = 8080u16;
 
         handle_pod_event(
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             false, // pd_mode = false, so it should fallback to regular handling
         )
         .await;
@@ -1020,6 +1060,7 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Prefill),
+            port: TEST_PORT,
             bootstrap_port: Some(8081),
         };
 
@@ -1029,13 +1070,10 @@ mod tests {
             tracked.insert(pod_info.clone());
         }
 
-        let port = 8080u16;
-
         handle_pod_deletion(
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             false, // pd_mode = false
         )
         .await;
@@ -1054,9 +1092,9 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Decode),
+            port: TEST_PORT,
             bootstrap_port: None,
         };
-        let port = 8080u16;
 
         // Don't add pod to tracked set
 
@@ -1064,7 +1102,6 @@ mod tests {
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             true, // pd_mode = true
         )
         .await;
@@ -1083,16 +1120,15 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Regular),
+            port: TEST_PORT,
             bootstrap_port: None,
         };
-        let port = 8080u16;
 
         // Test that unified handler works for regular mode
         handle_pod_event(
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             false, // pd_mode = false
         )
         .await;
@@ -1111,16 +1147,15 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Prefill),
+            port: TEST_PORT,
             bootstrap_port: Some(8081),
         };
-        let port = 8080u16;
 
         // Test that unified handler works for PD mode with prefill
         handle_pod_event(
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             true, // pd_mode = true
         )
         .await;
@@ -1139,6 +1174,7 @@ mod tests {
             status: "Running".into(),
             is_ready: true,
             pod_type: Some(PodType::Decode),
+            port: TEST_PORT,
             bootstrap_port: None,
         };
 
@@ -1148,14 +1184,11 @@ mod tests {
             tracked.insert(pod_info.clone());
         }
 
-        let port = 8080u16;
-
         // Test that unified handler works for deletion in PD mode
         handle_pod_deletion(
             &pod_info,
             Arc::clone(&tracked_pods),
             Arc::clone(&router),
-            port,
             true, // pd_mode = true
         )
         .await;

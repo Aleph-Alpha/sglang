@@ -62,6 +62,7 @@ class RouterArgs:
     # PD service discovery configuration
     prefill_selector: Dict[str, str] = dataclasses.field(default_factory=dict)
     decode_selector: Dict[str, str] = dataclasses.field(default_factory=dict)
+    service_discovery_port_annotation: str = "sglang.ai/service-discovery-port"
     bootstrap_port_annotation: str = "sglang.ai/bootstrap-port"
     # Prometheus configuration
     prometheus_port: Optional[int] = None
@@ -490,6 +491,7 @@ class RouterArgs:
             decode_selector=cls._parse_selector(
                 getattr(args, f"{prefix}decode_selector", None)
             ),
+            service_discovery_port_annotation="sglang.ai/service-discovery-port",
             bootstrap_port_annotation="sglang.ai/bootstrap-port",  # Mooncake-specific annotation
             prometheus_port=getattr(args, f"{prefix}prometheus_port", None),
             prometheus_host=getattr(args, f"{prefix}prometheus_host", None),

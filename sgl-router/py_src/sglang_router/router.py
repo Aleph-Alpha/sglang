@@ -61,6 +61,8 @@ class Router:
         request_id_headers: List of HTTP headers to check for request IDs. If not specified,
             uses common defaults: ['x-request-id', 'x-correlation-id', 'x-trace-id', 'request-id'].
             Example: ['x-my-request-id', 'x-custom-trace-id']. Default: None
+        service_discovery_port_annotation: Kubernetes annotation name for the service discovery port.
+            Can be used to override the default service discovery port. Default: 'sglang.ai/service-discovery-port'
         bootstrap_port_annotation: Kubernetes annotation name for bootstrap port (PD mode).
             Default: 'sglang.ai/bootstrap-port'
         request_timeout_secs: Request timeout in seconds. Default: 600
@@ -100,6 +102,7 @@ class Router:
         service_discovery_namespace: Optional[str] = None,
         prefill_selector: Dict[str, str] = None,
         decode_selector: Dict[str, str] = None,
+        service_discovery_port_annotation: str = "sglang.ai/service-discovery-port",
         bootstrap_port_annotation: str = "sglang.ai/bootstrap-port",
         prometheus_port: Optional[int] = None,
         prometheus_host: Optional[str] = None,
@@ -164,6 +167,7 @@ class Router:
             service_discovery_namespace=service_discovery_namespace,
             prefill_selector=prefill_selector,
             decode_selector=decode_selector,
+            service_discovery_port_annotation=service_discovery_port_annotation,
             bootstrap_port_annotation=bootstrap_port_annotation,
             prometheus_port=prometheus_port,
             prometheus_host=prometheus_host,
