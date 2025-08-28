@@ -259,18 +259,47 @@ pub async fn start_service_discovery(
         const MAX_RETRY_DELAY: Duration = Duration::from_secs(300); // 5 minutes max
 
         loop {
-            // Create a watcher with the proper parameters according to the kube-rs API
-            let watcher_config = Config::default();
+            // Combine all selectors for server-side filtering
+            let combined_selector = if config_arc.pd_mode {
+                // In PD mode, we create a server-side filter from the labels that
+                // are identical in both prefill and decode selectors.
+                let mut common_labels = String::new();
+                for (key, value) in &config_arc.prefill_selector {
+                    if config_arc.decode_selector.get(key) == Some(value) {
+                        if !common_labels.is_empty() {
+                            common_labels.push(',');
+                        }
+                        common_labels.push_str(&format!("{}={}", key, value));
+                    }
+                }
+
+                if common_labels.is_empty() {
+                    warn!("No common labels found between prefill and decode selectors. Watching all pods, which is inefficient.");
+                }
+                common_labels
+            } else {
+                config_arc
+                    .selector
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+
+            // Create a watcher with a timeout and server-side label selector
+            let watcher_config = Config::default()
+                .labels(&combined_selector)
+                .timeout(45); // Set timeout below aggressive proxy idle timeouts (~50s)
             let watcher_stream = watcher(pods.clone(), watcher_config).applied_objects();
 
             // Clone Arcs for the closures
-            let config_clone = Arc::clone(&config_arc);
             let tracked_pods_clone = Arc::clone(&tracked_pods);
 
-            // Simplified label selector filter using helper method
+            // Filter pods that should be included based on specific selectors (prefill/decode)
+            // This is necessary because the server-side selector might be broad.
+            let config_clone = Arc::clone(&config_arc);
             let filtered_stream = watcher_stream.filter_map(move |obj_res| {
                 let config_inner = Arc::clone(&config_clone);
-
                 async move {
                     match obj_res {
                         Ok(pod) => {
@@ -286,13 +315,12 @@ pub async fn start_service_discovery(
             });
 
             // Clone again for the next closure
-            let tracked_pods_clone2 = Arc::clone(&tracked_pods_clone);
             let router_clone = Arc::clone(&router);
             let config_clone2 = Arc::clone(&config_arc);
 
             match filtered_stream
                 .try_for_each(move |pod| {
-                    let tracked_pods_inner = Arc::clone(&tracked_pods_clone2);
+                    let tracked_pods_inner = Arc::clone(&tracked_pods_clone);
                     let router_inner = Arc::clone(&router_clone);
                     let config_inner = Arc::clone(&config_clone2);
 
@@ -324,13 +352,14 @@ pub async fn start_service_discovery(
                 .await
             {
                 Ok(_) => {
+                    info!("Kubernetes watcher stream ended gracefully, restarting immediately.");
                     // Reset retry delay on success
                     retry_delay = Duration::from_secs(1);
                 }
                 Err(err) => {
-                    error!("Error in Kubernetes watcher: {}", err);
                     warn!(
-                        "Retrying in {} seconds with exponential backoff",
+                        "Error in Kubernetes watcher: {}. Retrying in {} seconds",
+                        err,
                         retry_delay.as_secs()
                     );
                     time::sleep(retry_delay).await;
@@ -339,13 +368,6 @@ pub async fn start_service_discovery(
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                 }
             }
-
-            // If the watcher exits for some reason, wait a bit before restarting
-            warn!(
-                "Kubernetes watcher exited, restarting in {} seconds",
-                config_arc.check_interval.as_secs()
-            );
-            time::sleep(config_arc.check_interval).await;
         }
     });
 
