@@ -1,0 +1,49 @@
+name: Build and push sglang-router to Harbor
+
+on:
+  push:
+    tags:
+      - 'aa/release/*'
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      should_run: ${{ steps.ver.outputs.should_run }}
+    steps:
+      - name: Compute version with datetime suffix
+        id: ver
+        shell: bash
+        run: |
+          REF_NAME="${GITHUB_REF_NAME}"
+          if [[ "$REF_NAME" == aa/release/* ]]; then
+            BASE_VERSION="${REF_NAME#aa/release/}"
+            DT="$(date -u +%Y%m%dT%H%M%SZ)"
+            echo "version=${BASE_VERSION}-${DT}" >> "$GITHUB_OUTPUT"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Non-release ref: $REF_NAME. Skipping publish." >&2
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+  build-and-publish:
+    if: ${{ needs.meta.outputs.should_run == 'true' }}
+    needs: meta
+    permissions:
+      contents: read
+      id-token: write
+    uses: Aleph-Alpha/shared-workflows/.github/workflows/build-and-push.yaml@a7c73c4e95557755ef409b1d2906ab94fc73d90a
+    with:
+      registry: ${{ vars.REGISTRY }}
+      registry_user: ${{ vars.REGISTRY_USER }}
+      image_repository: inference-images/sglang-router
+      version: ${{ needs.meta.outputs.version }}
+      push: true
+      containerfile: ./docker/Dockerfile.sgl_router
+      context: .
+      runs_on: ubuntu-latest
+    secrets:
+      registry_password: ${{ secrets.REGISTRY_PASSWORD }}
