@@ -1,0 +1,33 @@
+# VCS
+.git
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+.env
+
+# Rust
+/target
+**/target
+Cargo.lock
+
+# Caches
+.cache
+pip-cache
+uv-cache
+
+# Logs
+*.log
+
+# Build outputs
+/dist
+/build
+
+# IDE/editor
+.vscode
+.idea
+*.swp

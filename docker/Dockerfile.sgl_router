@@ -1,0 +1,71 @@
+# Concise build for sglang-router: build wheel once and run via Python module
+
+ARG UBUNTU_VERSION=25.04
+
+FROM ubuntu:${UBUNTU_VERSION} AS builder
+
+ARG PYTHON_VERSION=3.12
+ARG RUST_TOOLCHAIN=stable
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH="/root/.cargo/bin:/root/.local/bin:${PATH}" \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+      build-essential \
+      libssl-dev \
+      pkg-config \
+      protobuf-compiler \
+      libprotobuf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -fsSL https://astral.sh/uv/install.sh | sh
+
+SHELL ["/bin/bash", "-lc"]
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN}
+
+WORKDIR /workspace
+
+COPY sgl-router/ sgl-router/
+
+WORKDIR /workspace/sgl-router
+
+# Build wheel and install into a virtualenv to collect runtime deps
+RUN uv venv --python ${PYTHON_VERSION} --seed && \
+    uv build && \
+    uv pip install -p .venv --no-cache-dir --force-reinstall dist/*.whl
+
+# Strip caches to shrink builder layer size
+RUN rm -rf /root/.cache /root/.cargo/registry/index
+
+FROM ubuntu:${UBUNTU_VERSION} AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH="/opt/sglang/.venv/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/sglang
+
+COPY --from=builder /opt/uv/python /opt/uv/python
+COPY --from=builder /workspace/sgl-router/.venv ./.venv
+
+# Create non-root user
+RUN useradd -r -u 10001 -g root sglang && \
+    chown -R sglang:root /opt/sglang && \
+    chmod -R g=u /opt/sglang
+
+USER 10001
+
+ENTRYPOINT ["/opt/sglang/.venv/bin/python", "-m", "sglang_router.launch_router"]
+CMD ["--help"]
