@@ -1,0 +1,101 @@
+# Base: official SGLang image with CUDA 12.6
+FROM lmsysorg/sglang:v0.5.1-cu126
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG FLASHMLA_COMMIT=b31bfe7
+ARG DEEPGEMM_COMMIT=391755ad
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    TORCH_CUDA_ARCH_LIST="9.0" \
+    CUDAARCHS="90" \
+    CMAKE_CUDA_ARCHITECTURES="90" \
+    CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=90"
+
+# System dependencies for building FlashMLA/DeepGEMM and RDMA userland
+RUN set -ex && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      git \
+      curl \
+      build-essential \
+      python3-dev \
+      python3-pip \
+      cmake \
+      ninja-build \
+      rdma-core \
+      libibverbs1 \
+      libibverbs-dev \
+      ibverbs-providers \
+      librdmacm1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Ensure CUDA tools from the base image are discoverable
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib:$LD_LIBRARY_PATH
+
+# Python deps/tools and runtime deps
+RUN python3 -m pip install --upgrade pip setuptools wheel build && \
+    python3 -m pip install --no-cache-dir netifaces
+
+WORKDIR /opt
+
+# Build and install FlashMLA (pinned)
+RUN set -ex && \
+    git clone https://github.com/deepseek-ai/FlashMLA.git && \
+    cd FlashMLA && \
+    git checkout ${FLASHMLA_COMMIT} && \
+    MAX_JOBS="$(nproc)" \
+    NVCC_THREADS="$(nproc)" \
+    VERBOSE=1 \
+    CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
+    python3 -m pip install \
+      --no-cache-dir \
+      --no-build-isolation \
+      . && \
+    cd .. && rm -rf FlashMLA
+
+# Build and install DeepGEMM (pinned)
+RUN set -ex && \
+    git clone --recursive https://github.com/deepseek-ai/DeepGEMM.git && \
+    cd DeepGEMM && \
+    git checkout ${DEEPGEMM_COMMIT} && \
+    MAX_JOBS="$(nproc)" \
+    VERBOSE=1 \
+    CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
+    python3 -m pip install \
+      --no-cache-dir \
+      --no-build-isolation \
+      . && \
+    cd .. && rm -rf DeepGEMM
+
+WORKDIR /workspace/sglang
+COPY . /workspace/sglang
+RUN set -ex && \
+    python3 -m pip uninstall -y sglang || true && \
+    python3 -m pip install --no-cache-dir "./python[all]"
+
+# Remove build-time dependencies
+RUN set -ex && \
+    apt-get purge -y --auto-remove \
+      git \
+      python3-dev \
+      cmake \
+      ninja-build \
+      libibverbs-dev \
+      python3-pip \
+      curl && \
+    rm -rf /var/lib/apt/lists/* /root/.cache
+
+WORKDIR /sgl-workspace
+
+# non-root user for runtime
+RUN useradd -r -u 10001 -g root sglang && \
+    mkdir -p /home/sglang && \
+    chown -R sglang:root /home/sglang
+
+USER 10001
+
+ENTRYPOINT ["python3", "-m", "sglang.launch_server"]
+CMD ["--help"]
