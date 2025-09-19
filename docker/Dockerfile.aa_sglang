@@ -3,7 +3,6 @@ FROM lmsysorg/sglang:v0.5.2-cu126
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG FLASHMLA_COMMIT=b31bfe7
-ARG DEEPGEMM_COMMIT=391755ad
 
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
@@ -55,20 +54,6 @@ RUN set -ex && \
       --no-build-isolation \
       . && \
     cd .. && rm -rf FlashMLA
-
-# Build and install DeepGEMM (pinned)
-RUN set -ex && \
-    git clone --recursive https://github.com/deepseek-ai/DeepGEMM.git && \
-    cd DeepGEMM && \
-    git checkout ${DEEPGEMM_COMMIT} && \
-    MAX_JOBS="$(nproc)" \
-    VERBOSE=1 \
-    CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
-    python3 -m pip install \
-      --no-cache-dir \
-      --no-build-isolation \
-      . && \
-    cd .. && rm -rf DeepGEMM
 
 WORKDIR /workspace/sglang
 COPY . /workspace/sglang
