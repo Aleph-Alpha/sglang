@@ -155,6 +155,15 @@ class OpenAIServingChat(OpenAIServingBase):
         # Extract custom labels from raw request headers
         custom_labels = self.extract_custom_labels(raw_request)
 
+        enable_thinking = (
+            self.reasoning_parser is not None
+            and hasattr(self.tokenizer_manager.tokenizer, "think_end_id")
+            and (
+                self.template_manager.force_reasoning
+                or self._get_enable_thinking_from_request(request)
+            )
+        )
+
         adapted_request = GenerateReqInput(
             **prompt_kwargs,
             image_data=processed_messages.image_data,
@@ -176,6 +185,7 @@ class OpenAIServingChat(OpenAIServingBase):
             extra_key=self._compute_extra_key(request),
             priority=request.priority,
             custom_labels=custom_labels,
+            enable_thinking=enable_thinking,
         )
 
         return adapted_request, request
