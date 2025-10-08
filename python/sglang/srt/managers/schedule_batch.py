@@ -461,6 +461,7 @@ class Req:
         priority: Optional[int] = None,
         metrics_collector: Optional[SchedulerMetricsCollector] = None,
         extra_key: Optional[str] = None,
+        enable_thinking: bool = False,
     ):
         # Input and output info
         self.rid = rid
@@ -520,6 +521,8 @@ class Req:
         self.eos_token_ids = eos_token_ids
         self.vocab_size = vocab_size
         self.priority = priority
+        # Per-request reasoning gating flag for grammar wrapping
+        self.enable_thinking = enable_thinking
 
         # For incremental decoding
         # ----- | --------- read_ids -------|

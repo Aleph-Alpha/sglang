@@ -169,6 +169,10 @@ class GenerateReqInput(BaseReq):
     # (Internal) Whether to return bytes for image generation
     return_bytes: bool = False
 
+    # (Internal) Enable model thinking/reasoning for this request.
+    # Used by the scheduler for per-request grammar gating.
+    enable_thinking: bool = False
+
     def contains_mm_input(self) -> bool:
         return (
             has_valid_data(self.image_data)
@@ -567,6 +571,7 @@ class GenerateReqInput(BaseReq):
             no_logs=self.no_logs,
             custom_labels=self.custom_labels,
             return_bytes=self.return_bytes,
+            enable_thinking=self.enable_thinking,
         )
 
 
@@ -631,6 +636,9 @@ class TokenizedGenerateReqInput(BaseReq):
 
     # (Internal) Whether to return bytes for image generation
     return_bytes: bool = False
+
+    # (Internal) Enable model thinking/reasoning for this request
+    enable_thinking: bool = False
 
 
 @dataclass
