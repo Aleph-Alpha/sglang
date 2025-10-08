@@ -152,6 +152,7 @@ from sglang.srt.model_executor.forward_batch_info import (
     PPProxyTensors,
 )
 from sglang.srt.parser.reasoning_parser import ReasoningParser
+from sglang.srt.constrained.reasoner_grammar_backend import ReasonerGrammarObject
 from sglang.srt.server_args import PortArgs, ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.torch_memory_saver_adapter import TorchMemorySaverAdapter
@@ -1312,6 +1313,7 @@ class Scheduler(
                 metrics_collector=(
                     self.metrics_collector if self.enable_metrics else None
                 ),
+                enable_thinking=recv_req.enable_thinking,
             )
             req.tokenizer = self.tokenizer
 
@@ -1430,6 +1432,10 @@ class Scheduler(
                 if value is INVALID_GRAMMAR_OBJ:  # We hit a cached invalid grammar.
                     error_msg = f"Invalid grammar request with cache hit: {key=}"
                     req.set_finish_with_abort(error_msg)
+                elif req.enable_thinking:
+                    req.grammar = ReasonerGrammarObject(
+                        req.grammar, self.tokenizer.think_end_id
+                    )
 
         if add_to_grammar_queue:
             self.grammar_queue.append(req)
@@ -2322,6 +2328,11 @@ class Scheduler(
         num_ready_reqs = num_ready_reqs_max + num_timeout_reqs_max
 
         for req in self.grammar_queue[:num_ready_reqs]:
+            if req.enable_thinking and req.grammar is not INVALID_GRAMMAR_OBJ:
+                req.grammar = ReasonerGrammarObject(
+                    req.grammar, self.tokenizer.think_end_id
+                )
+
             self._add_request_to_queue(req)
         self.grammar_queue = self.grammar_queue[num_ready_reqs:]
 
