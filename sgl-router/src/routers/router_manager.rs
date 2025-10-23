@@ -21,6 +21,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -313,15 +314,34 @@ impl RouterTrait for RouterManager {
     }
 
     async fn get_models(&self, _req: Request<Body>) -> Response {
-        let models = self.worker_registry.get_models();
+        let model_ids = self.worker_registry.get_models();
 
-        if models.is_empty() {
+        if model_ids.is_empty() {
             (StatusCode::SERVICE_UNAVAILABLE, "No models available").into_response()
         } else {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let data: Vec<serde_json::Value> = model_ids
+                .into_iter()
+                .map(|id| {
+                    serde_json::json!({
+                        "id": id,
+                        "object": "model",
+                        "created": now,
+                        "owned_by": "sglang",
+                        "root": serde_json::Value::Null, // set to null by default
+                    })
+                })
+                .collect();
+
             (
                 StatusCode::OK,
                 serde_json::json!({
-                    "models": models
+                    "object": "list",
+                    "data": data
                 })
                 .to_string(),
             )
