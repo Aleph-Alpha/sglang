@@ -232,10 +232,21 @@ pub async fn start_service_discovery(
             let watcher_config = Config::default();
             let watcher_stream = watcher(pods.clone(), watcher_config).applied_objects();
 
+            // Peek the raw stream to confirm the connection is healthy
+            let mut raw_peekable = Box::pin(watcher_stream.peekable());
+            if let Some(item) = raw_peekable.as_mut().peek().await {
+                if item.is_ok() {
+                    info!(
+                        "Kubernetes watcher connection is healthy. Resetting retry delay."
+                    );
+                    retry_delay = Duration::from_secs(1);
+                }
+            }
+
             let config_clone = Arc::clone(&config_arc);
             let tracked_pods_clone = Arc::clone(&tracked_pods);
 
-            let filtered_stream = watcher_stream.filter_map(move |obj_res| {
+            let filtered_stream = raw_peekable.filter_map(move |obj_res| {
                 let config_inner = Arc::clone(&config_clone);
 
                 async move {
@@ -256,7 +267,7 @@ pub async fn start_service_discovery(
             let app_context_clone = Arc::clone(&app_context);
             let config_clone2 = Arc::clone(&config_arc);
 
-            match filtered_stream
+            if let Err(err) = filtered_stream
                 .try_for_each(move |pod| {
                     let tracked_pods_inner = Arc::clone(&tracked_pods_clone2);
                     let app_context_inner = Arc::clone(&app_context_clone);
@@ -290,26 +301,15 @@ pub async fn start_service_discovery(
                 })
                 .await
             {
-                Ok(_) => {
-                    retry_delay = Duration::from_secs(1);
-                }
-                Err(err) => {
-                    error!("Error in Kubernetes watcher: {}", err);
-                    warn!(
-                        "Retrying in {} seconds with exponential backoff",
-                        retry_delay.as_secs()
-                    );
-                    time::sleep(retry_delay).await;
+                error!("Error in Kubernetes watcher: {}", err);
+                warn!(
+                    "Retrying in {} seconds with exponential backoff",
+                    retry_delay.as_secs()
+                );
+                time::sleep(retry_delay).await;
 
-                    retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
-                }
+                retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
             }
-
-            warn!(
-                "Kubernetes watcher exited, restarting in {} seconds",
-                config_arc.check_interval.as_secs()
-            );
-            time::sleep(config_arc.check_interval).await;
         }
     });
 
